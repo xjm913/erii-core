@@ -1,0 +1,12 @@
+# 核心机密（绝对防泄漏）
+.env
+
+# Python 编译缓存（不加这个你的 Github 仓库会极其臃肿）
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境目录（假设以后不用 Conda 改用 venv 的话）
+.venv/
+venv/
+env/
