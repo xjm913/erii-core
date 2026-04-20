@@ -1,6 +1,8 @@
 # 核心机密（绝对防泄漏）
 .env
 
+session_log.txt
+
 # Python 编译缓存（不加这个你的 Github 仓库会极其臃肿）
 __pycache__/
 *.py[cod]
