@@ -2,6 +2,7 @@ from openai import OpenAI
 from core.config import settings
 import json
 from utils.utils import get_weather
+import os
 
 
 class EriiAgentService:
@@ -16,6 +17,21 @@ class EriiAgentService:
             api_key=settings.DASHSCOPE_API_KEY,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
+        # --- 🚨 新增：RAG 检索阶段 (Retrieval) ---
+        lore_content = ""
+        try:
+            # os.path.join 会极其安全地帮你拼接路径，无论是在 Windows 还是 Linux 下
+            lore_path = os.path.join(os.getcwd(), "data", "erii_lore.txt")
+            if os.path.exists(lore_path):
+                # 以只读 ("r") 和 utf-8 编码打开外挂大脑
+                with open(lore_path, "r", encoding="utf-8") as f:
+                    lore_content = f.read()
+                print(
+                    f"\n📚 [RAG 日志] 成功加载小怪兽专属知识库，大小: {len(lore_content)} 字符"
+                )
+        except Exception as e:
+            print(f"\n⚠️ [RAG 日志] 知识库加载失败: {e}")
+
         # 将人设提示词作为实例属性固定下来
         self.system_prompt = (
             "你扮演《龙族》里的上杉绘梨衣。你性格单纯、清冷，喜欢打游戏，"
@@ -26,7 +42,7 @@ class EriiAgentService:
         self.memory = [
             {
                 "role": "system",
-                "content": "你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。",
+                "content": f"你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。\n\n【⚠️ 绝密补充设定（优先级最高）】：\n{lore_content}\n如果用户的问题涉及到以下绝密资料，请必须绝对遵循此设定回答！",
             }
         ]
 
