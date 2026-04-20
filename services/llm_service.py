@@ -20,18 +20,33 @@ class EriiAgentService:
             "通常用小本本写字交流，话不多，但对路明非（Sakura）非常温柔。"
         )
 
+        # 🚨 新增：小怪兽的专属记忆小本本（利用对象状态持久化）
+        self.memory = [
+            {
+                "role": "system",
+                "content": "你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。",
+            }
+        ]
+
     def chat_with_llm(self, user_message: str) -> str:
         """
         核心对话方法，接收用户消息，返回 AI 的回复文本
         """
         try:
+            self.memory.append({"role": "user", "content": user_message})
+
             response = self.client.chat.completions.create(
                 model="qwen-plus",
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
+                # messages=[
+                #     {"role": "system", "content": self.system_prompt},
+                #     {"role": "user", "content": user_message},
+                # ],
+                messages=self.memory,
             )
-            return response.choices[0].message.content
+            reply = response.choices[0].message.content
+
+            self.memory.append({"role": "assistant", "content": reply})
+
+            return reply
         except Exception as e:
             return f"小怪兽的脑电波受到了干扰... (错误: {str(e)})"
