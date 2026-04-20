@@ -1,5 +1,7 @@
 from openai import OpenAI
 from core.config import settings
+import json
+from utils.utils import get_weather
 
 
 class EriiAgentService:
@@ -28,33 +30,108 @@ class EriiAgentService:
             }
         ]
 
-    def chat_with_llm(self, user_message: str) -> str:
-        """
-        # . 🚨 新增：加入 stream=True 参数，开启水龙头
-        """
-        try:
-            self.memory.append({"role": "user", "content": user_message})
+        self.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "当用户询问天气时，必须调用此函数获取真实数据。不要自己瞎猜天气。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {
+                                "type": "string",
+                                "description": "城市名称，例如：北京，东京",
+                            }
+                        },
+                        "required": ["city"],
+                    },
+                },
+            }
+        ]
 
-            response = self.client.chat.completions.create(
-                model="qwen-plus",
-                # messages=[
-                #     {"role": "system", "content": self.system_prompt},
-                #     {"role": "user", "content": user_message},
-                # ],
-                messages=self.memory,
-                stream=True,
-            )
-            full_reply = ""
-            # reply = response.choices[0].message.content
+    # def chat_with_llm(self, user_message: str) -> str:
+    #     """
+    #     # . 🚨 新增：加入 stream=True 参数，开启水龙头
+    #     """
+    #     try:
+    #         self.memory.append({"role": "user", "content": user_message})
 
-            for chunk in response:
-                if chunk.choices[0].delta.content is not None:
-                    char = chunk.choices[0].delta.content
-                    full_reply += char
-                    yield char
+    #         response = self.client.chat.completions.create(
+    #             model="qwen-plus",
+    #             # messages=[
+    #             #     {"role": "system", "content": self.system_prompt},
+    #             #     {"role": "user", "content": user_message},
+    #             # ],
+    #             messages=self.memory,
+    #             stream=True,
+    #         )
+    #         full_reply = ""
+    #         # reply = response.choices[0].message.content
 
-            self.memory.append({"role": "assistant", "content": full_reply})
+    #         for chunk in response:
+    #             if chunk.choices[0].delta.content is not None:
+    #                 char = chunk.choices[0].delta.content
+    #                 full_reply += char
+    #                 yield char
 
-            # return reply
-        except Exception as e:
-            return f"小怪兽的脑电波受到了干扰... (错误: {str(e)})"
+    #         self.memory.append({"role": "assistant", "content": full_reply})
+
+    #         # return reply
+    #     except Exception as e:
+    #         return f"小怪兽的脑电波受到了干扰... (错误: {str(e)})"
+
+    def chat_with_llm(self, message: str):
+        # 1. 记录用户的话
+        self.memory.append({"role": "user", "content": message})
+
+        # ⚡ 第一回合：关闭流式 (stream=False)，带上工具菜单，让大模型冷静思考
+        response = self.client.chat.completions.create(
+            model="qwen-plus",
+            messages=self.memory,
+            tools=self.tools,
+            tool_choice="auto",  # 让大模型自己决定要不要用工具
+        )
+
+        response_message = response.choices[0].message
+        self.memory.append(response_message)  # 无论大模型回复啥，先记入小本本
+
+        # 2. 判断：大模型是否发出了“使用工具”的暗号？
+        if response_message.tool_calls:
+            # 截获指令
+            tool_call = response_message.tool_calls[0]
+            function_name = tool_call.function.name
+
+            # 解析大模型提取出的参数（例如 {"city": "东京"}）
+            function_args = json.loads(tool_call.function.arguments)
+
+            # 🛠️ 本地代码执行阶段
+            if function_name == "get_weather":
+                # 执行我们刚才写好的本地函数
+                function_response = get_weather(city=function_args.get("city"))
+
+                # 将真实的执行结果包装好，塞回记忆闭环
+                self.memory.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": function_response,
+                    }
+                )
+
+                # ⚡ 第二回合：让大模型看着天气数据，重新组织语言
+                second_response = self.client.chat.completions.create(
+                    model="qwen-plus", messages=self.memory
+                )
+                final_reply = second_response.choices[0].message.content
+                self.memory.append({"role": "assistant", "content": final_reply})
+        else:
+            # 大模型觉得不需要用工具（比如你只说了句“你好”），直接拿回复
+            final_reply = response_message.content
+
+        # 🚨 魔法兼容层：假装流式输出！
+        # 为了不破坏前端极其丝滑的 Streams API 打字机效果，
+        # 我们拿到完整句子后，在本地像挤牙膏一样 yield 给前端
+        for char in final_reply:
+            yield char
