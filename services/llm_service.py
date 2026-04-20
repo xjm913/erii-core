@@ -30,7 +30,7 @@ class EriiAgentService:
 
     def chat_with_llm(self, user_message: str) -> str:
         """
-        核心对话方法，接收用户消息，返回 AI 的回复文本
+        # . 🚨 新增：加入 stream=True 参数，开启水龙头
         """
         try:
             self.memory.append({"role": "user", "content": user_message})
@@ -42,11 +42,19 @@ class EriiAgentService:
                 #     {"role": "user", "content": user_message},
                 # ],
                 messages=self.memory,
+                stream=True,
             )
-            reply = response.choices[0].message.content
+            full_reply = ""
+            # reply = response.choices[0].message.content
 
-            self.memory.append({"role": "assistant", "content": reply})
+            for chunk in response:
+                if chunk.choices[0].delta.content is not None:
+                    char = chunk.choices[0].delta.content
+                    full_reply += char
+                    yield char
 
-            return reply
+            self.memory.append({"role": "assistant", "content": full_reply})
+
+            # return reply
         except Exception as e:
             return f"小怪兽的脑电波受到了干扰... (错误: {str(e)})"
