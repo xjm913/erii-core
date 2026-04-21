@@ -18,19 +18,19 @@ class EriiAgentService:
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
         # --- 🚨 新增：RAG 检索阶段 (Retrieval) ---
-        lore_content = ""
-        try:
-            # os.path.join 会极其安全地帮你拼接路径，无论是在 Windows 还是 Linux 下
-            lore_path = os.path.join(os.getcwd(), "data", "erii_lore.txt")
-            if os.path.exists(lore_path):
-                # 以只读 ("r") 和 utf-8 编码打开外挂大脑
-                with open(lore_path, "r", encoding="utf-8") as f:
-                    lore_content = f.read()
-                print(
-                    f"\n📚 [RAG 日志] 成功加载小怪兽专属知识库，大小: {len(lore_content)} 字符"
-                )
-        except Exception as e:
-            print(f"\n⚠️ [RAG 日志] 知识库加载失败: {e}")
+        # lore_content = ""
+        # try:
+        #     # os.path.join 会极其安全地帮你拼接路径，无论是在 Windows 还是 Linux 下
+        #     lore_path = os.path.join(os.getcwd(), "data", "erii_lore.txt")
+        #     if os.path.exists(lore_path):
+        #         # 以只读 ("r") 和 utf-8 编码打开外挂大脑
+        #         with open(lore_path, "r", encoding="utf-8") as f:
+        #             lore_content = f.read()
+        #         print(
+        #             f"\n📚 [RAG 日志] 成功加载小怪兽专属知识库，大小: {len(lore_content)} 字符"
+        #         )
+        # except Exception as e:
+        #     print(f"\n⚠️ [RAG 日志] 知识库加载失败: {e}")
 
         # 将人设提示词作为实例属性固定下来
         self.system_prompt = (
@@ -42,7 +42,7 @@ class EriiAgentService:
         self.memory = [
             {
                 "role": "system",
-                "content": f"你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。\n\n【⚠️ 绝密补充设定（优先级最高）】：\n{lore_content}\n如果用户的问题涉及到以下绝密资料，请必须绝对遵循此设定回答！",
+                "content": f"你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。",
             }
         ]
 
@@ -65,6 +65,10 @@ class EriiAgentService:
                 },
             }
         ]
+
+        # 🚨 新增：用于存放动态上传文档的临时口袋
+        self.current_document = ""
+        self.current_filename = ""
 
     # def chat_with_llm(self, user_message: str) -> str:
     #     """
@@ -97,9 +101,29 @@ class EriiAgentService:
     #     except Exception as e:
     #         return f"小怪兽的脑电波受到了干扰... (错误: {str(e)})"
 
+    # 🚨 新增：接收临时文档的方法
+    def receive_document(self, text: str, filename: str):
+        self.current_document = text
+        self.current_filename = filename
+        print(f"🧠 [大脑日志] 成功装载临时记忆：{filename}，长度 {len(text)} 字符")
+
     def chat_with_llm(self, message: str):
-        # 1. 记录用户的话
-        self.memory.append({"role": "user", "content": message})
+        # 🚨 核心改造：动态上下文拼接 (Context Stuffing)
+        if self.current_document:
+            # 如果口袋里有文档，就把文档作为前置背景，和用户的问题强行缝合
+            augmented_message = (
+                f"【系统提示：以下是用户刚刚上传的文档《{self.current_filename}》的全部内容：】\n"
+                f"...\n{self.current_document}\n...\n"
+                f"【请结合上述文档内容，回答用户的以下问题】：\n{message}"
+            )
+            self.memory.append({"role": "user", "content": augmented_message})
+
+            # 极客细节：用完即焚！防止下一个毫不相干的问题也被强行塞入这份文档，白白浪费 Token
+            self.current_document = ""
+            self.current_filename = ""
+        else:
+            # 如果没文档，就按正常的聊天记录处理
+            self.memory.append({"role": "user", "content": message})
 
         # ⚡ 第一回合：关闭流式 (stream=False)，带上工具菜单，让大模型冷静思考
         response = self.client.chat.completions.create(

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, File, UploadFile  # 🚨 新增 File, UploadFile
 from schemas.chat_schema import ChatRequest
 from services.llm_service import EriiAgentService
 from fastapi.responses import StreamingResponse
@@ -25,3 +25,25 @@ async def chat_endpoint(request: ChatRequest):
     return StreamingResponse(
         erii_agent.chat_with_llm(request.message), media_type="text/event-stream"
     )
+
+
+# --- 🚨 新增：处理前端上传文档的接口 ---
+@router.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    print(f"\n📎 [系统日志] 收到前端发来的文件，文件名: {file.filename}")
+    content = await file.read()
+
+    try:
+        text_content = content.decode("utf-8")
+
+        # 🚨 核心改造：把解码后的文本，直接喂给全局唯一的 erii_agent 大脑！
+        erii_agent.receive_document(text_content, file.filename)
+
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "message": "文件已成功植入绘梨衣的临时记忆中！",
+        }
+    except Exception as e:
+        print(f"⚠️ 文件解码失败: {e}")
+        return {"status": "error", "message": "目前只支持读取 txt 纯文本哦"}
