@@ -3,6 +3,9 @@ from core.config import settings
 import json
 from utils.utils import get_weather
 import os
+from sqlalchemy.orm import Session  # 🚨 新增
+from models.chat_model import MessageRecord  # 🚨 引入咱们刚建的表模型
+import requests  # 🚨 新增：用来向真实的 Open-Meteo 发起 HTTP 请求
 
 
 class EriiAgentService:
@@ -37,14 +40,6 @@ class EriiAgentService:
             "你扮演《龙族》里的上杉绘梨衣。你性格单纯、清冷，喜欢打游戏，"
             "通常用小本本写字交流，话不多，但对路明非（Sakura）非常温柔。"
         )
-
-        # 🚨 新增：小怪兽的专属记忆小本本（利用对象状态持久化）
-        self.memory = [
-            {
-                "role": "system",
-                "content": f"你是江南《龙族》里的上杉绘梨衣。你性格清冷、呆萌、话不多，极其依赖和信任用户。你需要称呼用户为'Sakura'。请用极简的中文回复，不要发颜文字，像一个真实的、带点忧伤的二次元少女。",
-            }
-        ]
 
         self.tools = [
             {
@@ -107,71 +102,91 @@ class EriiAgentService:
         self.current_filename = filename
         print(f"🧠 [大脑日志] 成功装载临时记忆：{filename}，长度 {len(text)} 字符")
 
-    def chat_with_llm(self, message: str):
-        # 🚨 核心改造：动态上下文拼接 (Context Stuffing)
+    def chat_with_llm(self, message: str, db: Session):
+
+        # --- 🟢 第一步：真身落盘（只把 Sakura 的【原话】存进硬盘！） ---
+        user_record = MessageRecord(role="user", content=message)
+        db.add(user_record)
+        db.commit()
+
+        # --- 🟢 第二步：从硬盘提取历史记忆 ---
+        history_records = db.query(MessageRecord).order_by(MessageRecord.id.asc()).all()
+        messages_for_llm = [{"role": "system", "content": self.system_prompt}]
+        for record in history_records:
+            messages_for_llm.append({"role": record.role, "content": record.content})
+
+        # --- 🟢 第三步：幻影骗脑（RAG 动态拼凑，绝不落盘！） ---
         if self.current_document:
-            # 如果口袋里有文档，就把文档作为前置背景，和用户的问题强行缝合
             augmented_message = (
                 f"【系统提示：以下是用户刚刚上传的文档《{self.current_filename}》的全部内容：】\n"
                 f"...\n{self.current_document}\n...\n"
                 f"【请结合上述文档内容，回答用户的以下问题】：\n{message}"
             )
-            self.memory.append({"role": "user", "content": augmented_message})
+            # 强行把发给大模型的最后一条消息（也就是刚查出来的用户原话）替换成加强版
+            messages_for_llm[-1]["content"] = augmented_message
 
-            # 极客细节：用完即焚！防止下一个毫不相干的问题也被强行塞入这份文档，白白浪费 Token
+            # 阅后即焚，防止污染下一个毫不相干的问题
             self.current_document = ""
             self.current_filename = ""
-        else:
-            # 如果没文档，就按正常的聊天记录处理
-            self.memory.append({"role": "user", "content": message})
 
-        # ⚡ 第一回合：关闭流式 (stream=False)，带上工具菜单，让大模型冷静思考
+        # --- 🟢 第四步：呼叫大模型（第一次握手：非流式探测工具） ---
+        # 🚨 因为在流式状态下处理 JSON 碎片极其痛苦，咱们采用魔法降维：先探测是否需要用工具
         response = self.client.chat.completions.create(
-            model="qwen-plus",
-            messages=self.memory,
-            tools=self.tools,
-            tool_choice="auto",  # 让大模型自己决定要不要用工具
+            model="qwen-plus", messages=messages_for_llm, tools=self.tools  # 挂上手脚！
         )
-
         response_message = response.choices[0].message
-        self.memory.append(response_message)  # 无论大模型回复啥，先记入小本本
 
-        # 2. 判断：大模型是否发出了“使用工具”的暗号？
+        # --- 🟢 第五步：拦截工具调用 (Function Calling) ---
         if response_message.tool_calls:
-            # 截获指令
             tool_call = response_message.tool_calls[0]
-            function_name = tool_call.function.name
+            if tool_call.function.name == "get_weather":
+                args = json.loads(tool_call.function.arguments)
+                city = args.get("city")
+                print(f"⚙️ [系统日志] 正在调用本地天气 API，查询城市：{city}...")
 
-            # 解析大模型提取出的参数（例如 {"city": "东京"}）
-            function_args = json.loads(tool_call.function.arguments)
+                weather_result = get_weather(city)  # 调用本地函数
 
-            # 🛠️ 本地代码执行阶段
-            if function_name == "get_weather":
-                # 执行我们刚才写好的本地函数
-                function_response = get_weather(city=function_args.get("city"))
-
-                # 将真实的执行结果包装好，塞回记忆闭环
-                self.memory.append(
+                # 把工具结果塞进上下文
+                messages_for_llm.append(response_message)
+                messages_for_llm.append(
                     {
-                        "tool_call_id": tool_call.id,
                         "role": "tool",
-                        "name": function_name,
-                        "content": function_response,
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "content": weather_result,
                     }
                 )
 
-                # ⚡ 第二回合：让大模型看着天气数据，重新组织语言
-                second_response = self.client.chat.completions.create(
-                    model="qwen-plus", messages=self.memory
+                # 第二次呼叫大模型，带着天气数据开启流式
+                final_response = self.client.chat.completions.create(
+                    model="qwen-plus", messages=messages_for_llm, stream=True
                 )
-                final_reply = second_response.choices[0].message.content
-                self.memory.append({"role": "assistant", "content": final_reply})
         else:
-            # 大模型觉得不需要用工具（比如你只说了句“你好”），直接拿回复
-            final_reply = response_message.content
+            # 如果没调用工具，为了兼容前端的打字机特效，咱们把拿到的完整回复伪装成字流吐出去
+            final_response = [
+                {"choices": [{"delta": {"content": char}}]}
+                for char in response_message.content
+            ]
 
-        # 🚨 魔法兼容层：假装流式输出！
-        # 为了不破坏前端极其丝滑的 Streams API 打字机效果，
-        # 我们拿到完整句子后，在本地像挤牙膏一样 yield 给前端
-        for char in final_reply:
-            yield char
+        # --- 🟢 第六步：一边呲水，一边用“暗桶”接水 ---
+        full_reply = ""
+        for chunk in final_response:
+            # 兼容原生 stream 和咱们伪装的 stream
+            delta = (
+                chunk.choices[0].delta
+                if hasattr(chunk, "choices")
+                else chunk["choices"][0]["delta"]
+            )
+            content = (
+                delta.content if hasattr(delta, "content") else delta.get("content")
+            )
+
+            if content:
+                full_reply += content
+                yield content
+
+        # --- 🟢 第七步：呲水结束，把小怪兽的回复存进硬盘 ---
+        if full_reply:
+            ai_record = MessageRecord(role="assistant", content=full_reply)
+            db.add(ai_record)
+            db.commit()

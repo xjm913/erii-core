@@ -5,6 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from api import chat_router
+# ... 原有 imports 保持不动 ...
+from core.database import engine, Base
+from models import chat_model # 🚨 极其关键：必须引入这个文件，SQLAlchemy 启动时才能扫描到里面的表结构
 
 # 定义会话日志的文件名
 LOG_FILE = "session_log.txt"
@@ -22,6 +25,12 @@ logger = logging.getLogger("EriiLogger")
 # 2. 🚨 核心黑科技：生命周期钩子 (Lifespan)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+# --- 🚨 新增：让 SQLAlchemy 自动去数据库里建表 ---
+    print("⚙️ [系统日志] 正在同步数据库表结构...")
+    Base.metadata.create_all(bind=engine)
+    # -----------------------------------------------
+
     # 【服务启动时执行 (相当于前端的 componentDidMount)】
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write("=== 🐉 小怪兽引擎：本次开发会话日志开始 ===\n")
