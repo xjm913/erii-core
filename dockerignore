@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+.venv
+erii_core
+.git
+.env
+postgres_data

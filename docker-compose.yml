@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # --- 1. 记忆中枢 (数据库) ---
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: erii-db
+    restart: always
+    environment:
+      POSTGRES_USER: zer0ff
+      POSTGRES_PASSWORD: erii_secret
+      POSTGRES_DB: erii_db
+    ports:
+      - "5432:5432"
+    volumes:
+      # 把数据挂载到后端目录的 postgres_data 文件夹里，防止删容器后失忆
+      - ./postgres_data:/var/lib/postgresql/data 
+
+  # --- 2. 小怪兽大脑 (Python 后端) ---
+  backend:
+    build: .  # 就在当前目录构建后端
+    container_name: erii-backend
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env  # 必须确保你笔记本上克隆下来后，手动建一个 .env 填入百炼 API Key
+    environment:
+      # 🚨 强行覆盖代码里的默认值，指向 Docker 内部的 db 服务
+      - DATABASE_URL=postgresql://zer0ff:erii_secret@db:5432/erii_db
+
+  # --- 3. 绝美皮囊 (Next.js 前端) ---
+  frontend:
+    # 🚨 核心跳板：告诉 Docker 去隔壁的 erii-note 文件夹里找前台图纸
+    build: ../erii-note 
+    container_name: erii-frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    environment:
+      # 告诉容器里的前端，去访问宿主机的 8000 端口拿后端数据
+      - NEXT_PUBLIC_API_URL=http://localhost:8000/api

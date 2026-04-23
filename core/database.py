@@ -5,7 +5,12 @@ from core.config import settings
 # 1. 组装跨次元的连接字符串 (等同于前端 Prisma 的 DATABASE_URL)
 # 格式: postgresql://用户名:密码@主机:端口/数据库名
 # 这里咱们先硬编码写死，跑通后再教你怎么优雅地挪到 .env 里
-SQLALCHEMY_DATABASE_URL = "postgresql://zer0ff:erii_secret@127.0.0.1:5432/erii_db"
+import os
+
+# 🚨 核心魔法：os.getenv("要找的环境变量", "找不到时的备胎地址")
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql://zer0ff:erii_secret@127.0.0.1:5432/erii_db"
+)
 
 # 2. 制造引擎 (Engine)
 # 它是大楼的“发电机”，负责在底层维持与 Postgres 数据库的 TCP 物理连接池
@@ -20,6 +25,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # 以后咱们定义的“聊天记录表”、“用户表”，都必须继承这个基类。
 # SQLAlchemy 会扫描继承了它的类，自动帮咱们在数据库里把表建出来
 Base = declarative_base()
+
 
 # 5. 依赖注入发生器 (给路由层用的魔法水管)
 def get_db():
