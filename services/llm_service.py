@@ -1,11 +1,12 @@
 from openai import OpenAI
 from core.config import settings
 import json
-from utils.utils import get_weather
+from utils.utils import get_weather, search_knowledge_base
 import os
 from sqlalchemy.orm import Session  # 🚨 新增
 from models.chat_model import MessageRecord  # 🚨 引入咱们刚建的表模型
 import requests  # 🚨 新增：用来向真实的 Open-Meteo 发起 HTTP 请求
+from core.vector_store import vector_store  # 🚨 新增：引入咱们的向量雷达
 
 
 class EriiAgentService:
@@ -36,10 +37,13 @@ class EriiAgentService:
         #     print(f"\n⚠️ [RAG 日志] 知识库加载失败: {e}")
 
         # 将人设提示词作为实例属性固定下来
-        self.system_prompt = (
-            "你扮演《龙族》里的上杉绘梨衣。你性格单纯、清冷，喜欢打游戏，"
-            "通常用小本本写字交流，话不多，但对路明非（Sakura）非常温柔。"
-        )
+        self.system_prompt = {
+            "role": "system",
+            "content": (
+                "你扮演《龙族》里的上杉绘梨衣。你性格单纯、清冷，喜欢打游戏，"
+                "通常用小本本写字交流，说话比较简短，但对路明非（Sakura）非常温柔。"
+            ),
+        }
 
         self.tools = [
             {
@@ -58,7 +62,25 @@ class EriiAgentService:
                         "required": ["city"],
                     },
                 },
-            }
+            },
+            # 👇 新增：本地知识库检索工具
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_knowledge_base",
+                    "description": "当用户询问关于刚刚上传的文档、绘梨衣的特定设定、或者需要查阅本地知识库中的内容时，必须调用此工具获取背景资料。如果是普通的日常问候闲聊，请绝对不要调用此工具。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "需要去知识库中精确检索的核心问题或关键词",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                },
+            },
         ]
 
         # 🚨 新增：用于存放动态上传文档的临时口袋
@@ -103,75 +125,71 @@ class EriiAgentService:
         print(f"🧠 [大脑日志] 成功装载临时记忆：{filename}，长度 {len(text)} 字符")
 
     def chat_with_llm(self, message: str, db: Session):
-
-        # --- 🟢 第一步：真身落盘（只把 Sakura 的【原话】存进硬盘！） ---
+        # --- 🟢 第一步：真身落盘（只存用户的极简原话） ---
         user_record = MessageRecord(role="user", content=message)
         db.add(user_record)
         db.commit()
 
-        # --- 🟢 第二步：从硬盘提取历史记忆 ---
+        # --- 🟢 第二步：提取历史记忆 ---
         history_records = db.query(MessageRecord).order_by(MessageRecord.id.asc()).all()
-        messages_for_llm = [{"role": "system", "content": self.system_prompt}]
+        messages_for_llm = [self.system_prompt]
         for record in history_records:
             messages_for_llm.append({"role": record.role, "content": record.content})
 
-        # --- 🟢 第三步：幻影骗脑（RAG 动态拼凑，绝不落盘！） ---
-        if self.current_document:
-            augmented_message = (
-                f"【系统提示：以下是用户刚刚上传的文档《{self.current_filename}》的全部内容：】\n"
-                f"...\n{self.current_document}\n...\n"
-                f"【请结合上述文档内容，回答用户的以下问题】：\n{message}"
-            )
-            # 强行把发给大模型的最后一条消息（也就是刚查出来的用户原话）替换成加强版
-            messages_for_llm[-1]["content"] = augmented_message
+        # 🚨 极其关键：彻底删除了这里原本的 vector_store.similarity_search 无脑检索代码！
 
-            # 阅后即焚，防止污染下一个毫不相干的问题
-            self.current_document = ""
-            self.current_filename = ""
-
-        # --- 🟢 第四步：呼叫大模型（第一次握手：非流式探测工具） ---
-        # 🚨 因为在流式状态下处理 JSON 碎片极其痛苦，咱们采用魔法降维：先探测是否需要用工具
+        # --- 🟢 第三步：第一次握手（非流式探测意图） ---
         response = self.client.chat.completions.create(
-            model="qwen-plus", messages=messages_for_llm, tools=self.tools  # 挂上手脚！
+            model="qwen-plus",
+            messages=messages_for_llm,
+            tools=self.tools,  # 把带有天气和知识库的完整菜单递给大模型
         )
         response_message = response.choices[0].message
 
-        # --- 🟢 第五步：拦截工具调用 (Function Calling) ---
+        # --- 🟢 第四步：拦截智能体的工具路由 ---
         if response_message.tool_calls:
             tool_call = response_message.tool_calls[0]
-            if tool_call.function.name == "get_weather":
-                args = json.loads(tool_call.function.arguments)
-                city = args.get("city")
-                print(f"⚙️ [系统日志] 正在调用本地天气 API，查询城市：{city}...")
+            function_name = tool_call.function.name
+            args = json.loads(tool_call.function.arguments)
 
-                weather_result = get_weather(city)  # 调用本地函数
+            tool_result = ""  # 准备存放工具执行的结果
 
-                # 把工具结果塞进上下文
-                messages_for_llm.append(response_message)
-                messages_for_llm.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_call.function.name,
-                        "content": weather_result,
-                    }
-                )
+            # 路由分支 A：查天气
+            if function_name == "get_weather":
+                tool_result = get_weather(args.get("city"))
 
-                # 第二次呼叫大模型，带着天气数据开启流式
-                final_response = self.client.chat.completions.create(
-                    model="qwen-plus", messages=messages_for_llm, stream=True
-                )
+            # 路由分支 B：查阅本地向量数据库
+            elif function_name == "search_knowledge_base":
+                tool_result = search_knowledge_base(args.get("query"))
+
+            # 🚨 终极修复：使用咱们之前防 400 报错的神级序列化方法
+            assistant_msg = response_message.model_dump(exclude_none=True)
+            messages_for_llm.append(assistant_msg)
+
+            # 把工具真实的执行结果塞回去
+            messages_for_llm.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": tool_result,
+                }
+            )
+
+            # 带着真实数据，开启第二次真实呲水
+            final_response = self.client.chat.completions.create(
+                model="qwen-plus", messages=messages_for_llm, stream=True
+            )
         else:
-            # 如果没调用工具，为了兼容前端的打字机特效，咱们把拿到的完整回复伪装成字流吐出去
+            # 如果大模型觉得只是在闲聊，直接把回复伪装成字流吐出去
             final_response = [
                 {"choices": [{"delta": {"content": char}}]}
                 for char in response_message.content
             ]
 
-        # --- 🟢 第六步：一边呲水，一边用“暗桶”接水 ---
+        # --- 🟢 第五步：一边呲水，一边用“暗桶”接水落盘 ---
         full_reply = ""
         for chunk in final_response:
-            # 兼容原生 stream 和咱们伪装的 stream
             delta = (
                 chunk.choices[0].delta
                 if hasattr(chunk, "choices")
@@ -180,12 +198,10 @@ class EriiAgentService:
             content = (
                 delta.content if hasattr(delta, "content") else delta.get("content")
             )
-
             if content:
                 full_reply += content
                 yield content
 
-        # --- 🟢 第七步：呲水结束，把小怪兽的回复存进硬盘 ---
         if full_reply:
             ai_record = MessageRecord(role="assistant", content=full_reply)
             db.add(ai_record)
