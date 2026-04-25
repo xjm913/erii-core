@@ -1,6 +1,7 @@
 from langchain_openai import OpenAIEmbeddings
 from langchain_postgres import PGVector
 from core.config import settings
+import os
 
 # 1. 配置“升维翻译官” (Embedding 模型)
 # 既然咱们用的是阿里云百炼的兼容模式，这里直接调用百炼自带的 text-embedding 引擎
@@ -15,7 +16,14 @@ embeddings = OpenAIEmbeddings(
 # 2. 组装向量数据库的连接字符串
 # 注意：LangChain 的 PGVector 需要使用 psycopg3 (psycopg) 协议，
 # 我们在 database.py 用的是 psycopg2，所以这里的连接头是 postgresql+psycopg://
-VECTOR_DB_URL = "postgresql+psycopg://zer0ff:erii_secret@127.0.0.1:5432/erii_db"
+# 2. 组装向量数据库的连接字符串
+# 🚨 动态获取 Docker 传进来的地址，如果没有就退化为本地 127.0.0.1
+raw_db_url = os.getenv(
+    "DATABASE_URL", "postgresql://zer0ff:erii_secret@127.0.0.1:5432/erii_db"
+)
+
+# 🚨 LangChain 的底座需要 psycopg 协议，我们自动在协议头上加个补丁
+VECTOR_DB_URL = raw_db_url.replace("postgresql://", "postgresql+psycopg://")
 
 # 3. 实例化向量集合 (Collection)
 # 这就好比在 erii_db 数据库里，专门划出一块叫 "erii_knowledge" 的区域来存咱们的碎块

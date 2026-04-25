@@ -1,4 +1,4 @@
-version: '3.8'
+# version: '3.8'
 
 services:
   # --- 1. 记忆中枢 (数据库) ---
@@ -13,8 +13,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # 把数据挂载到后端目录的 postgres_data 文件夹里，防止删容器后失忆
-      - ./postgres_data:/var/lib/postgresql/data 
+      # 🚨 核心修改 1：不写 ./postgres_data 了，换成一个专属代号
+      - erii_pg_data:/var/lib/postgresql/data
 
   # --- 2. 小怪兽大脑 (Python 后端) ---
   backend:
@@ -28,7 +28,7 @@ services:
     env_file:
       - .env  # 必须确保你笔记本上克隆下来后，手动建一个 .env 填入百炼 API Key
     environment:
-      # 🚨 强行覆盖代码里的默认值，指向 Docker 内部的 db 服务
+      # 🚨 检查这里！必须是 @db:5432，绝对不能是 127.0.0.1
       - DATABASE_URL=postgresql://zer0ff:erii_secret@db:5432/erii_db
 
   # --- 3. 绝美皮囊 (Next.js 前端) ---
@@ -43,4 +43,23 @@ services:
       - "3000:3000"
     environment:
       # 告诉容器里的前端，去访问宿主机的 8000 端口拿后端数据
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      # 之前是 NEXT_PUBLIC_API_URL=http://localhost:8000/api
+      # 把它改为通过 Nginx 网关访问 (同一域名下的相对路径)
+      - NEXT_PUBLIC_API_URL=/api
+
+# --- 4. 终极网关大门 (Nginx) ---
+  nginx:
+    image: nginx:alpine
+    container_name: erii-nginx
+    restart: always
+    ports:
+      - "80:80"  # 暴露唯一的 80 端口给外网
+    volumes:
+      # 把咱们刚才写的配置挂载进容器内部覆盖默认配置
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+
+volumes:
+  erii_pg_data:

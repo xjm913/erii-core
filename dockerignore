@@ -5,3 +5,4 @@ erii_core
 .git
 .env
 postgres_data
+postgres_data/

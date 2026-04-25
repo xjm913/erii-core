@@ -7,7 +7,7 @@ from core.config import settings
 # 这里咱们先硬编码写死，跑通后再教你怎么优雅地挪到 .env 里
 import os
 
-# 🚨 核心魔法：os.getenv("要找的环境变量", "找不到时的备胎地址")
+# 🚨 必须是这种包裹了 os.getenv 的动态写法
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://zer0ff:erii_secret@127.0.0.1:5432/erii_db"
 )

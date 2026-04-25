@@ -5,9 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from api import chat_router
+
 # ... 原有 imports 保持不动 ...
 from core.database import engine, Base
-from models import chat_model # 🚨 极其关键：必须引入这个文件，SQLAlchemy 启动时才能扫描到里面的表结构
+from models import (
+    chat_model,
+)  # 🚨 极其关键：必须引入这个文件，SQLAlchemy 启动时才能扫描到里面的表结构
 
 # 定义会话日志的文件名
 LOG_FILE = "session_log.txt"
@@ -26,7 +29,7 @@ logger = logging.getLogger("EriiLogger")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-# --- 🚨 新增：让 SQLAlchemy 自动去数据库里建表 ---
+    # --- 🚨 新增：让 SQLAlchemy 自动去数据库里建表 ---
     print("⚙️ [系统日志] 正在同步数据库表结构...")
     Base.metadata.create_all(bind=engine)
     # -----------------------------------------------
@@ -90,4 +93,4 @@ app.include_router(chat_router.router, prefix="/api")
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
